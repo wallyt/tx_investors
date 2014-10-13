@@ -1,0 +1,302 @@
+#Analysis of Texas Investor List
+###Wally Thornton
+####October 13, 2014
+
+###Synopsis
+Using data obtained from RentRange in August, 2014, we process and analyze the data looking for trends within the variables given for Texas residential investors.
+
+```{r prep, echo=FALSE, include=FALSE}
+# Processing
+knitr::opts_chunk$set(fig.width=9, echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, comment="")
+options(scipen=999)
+
+ensurePkg <- function(x) {
+    if (!require(x,character.only = TRUE)) {
+        install.packages(x,dep=TRUE, repos="http://cran.r-project.org")
+        if(!require(x,character.only = TRUE)) stop("Package not found")
+    }
+}
+ensurePkg("data.table")
+ensurePkg("ggplot2")
+ensurePkg("reshape2")
+ensurePkg("scales")
+ensurePkg("corrplot")
+ensurePkg("maps")
+ensurePkg("plyr")
+ensurePkg("grid")
+
+if(!exists("txData1")) {
+    txData1 <- read.csv("TX_ModifiedInvestorReport_201407.csv", na.strings = "", as.is=
+                       c("Investor.Name", "Secondary.Owner.Name", "Investor.Mailing.Address",
+                         "Investor.Mailing.City", "Investor.Mailing.State")
+                       )
+}
+txData1$X <- NULL  # Empty column
+txData2 <- txData1[!duplicated(txData1$Investor.Mailing.Address), ] # Deduping mailing addresses
+txData2 <- txData2[!is.na(txData2$Investor.Name), ] # No name, no address, no help
+txData2 <- txData2[!is.na(txData2$Investor.Mailing.City), ]
+txData2 <- txData2[!is.na(txData2$Investor.Mailing.State), ]
+txData2 <- txData2[!is.na(txData2$Investor.Mailing.Zip), ]
+
+# Subset to residents of TX only
+txInv <- txData2[txData2$Investor.Mailing.State == "TX", ]
+
+# This leaves 230,867 names+addresses, much greater than RentRange's claimed 166,000
+# But even looking for unique names only gets us down to 223,613
+uniqueNames <- length(unique(txInv[, "Investor.Name"]))
+```
+
+The raw data has **`r comma_format()(nrow(txData1))`** rows. Deduping based on mailing addresses results in **`r comma_format()(nrow(txData2))`** rows. Eliminating all investors who don't have a Texas mailing address yields **`r comma_format()(nrow(txInv))`** Texas investors.
+
+*****
+
+###Who owns what and where do they live?
+The data includes a breakdown of "investor class," which are groupings by number of units owned. Running a histogram of Investor Class demonstrates how skewed the distribution is.
+
+```{r invClass}
+invClass <- subset(txInv, select = Investor.Class, drop = TRUE)
+invClass <- factor(invClass, levels=c("2-4 Units", "5-10 Units", 
+                                      "11-25 Units", "26-100 Units", 
+                                      "101-250 Units", "251-500 Units", 
+                                      "501-1000 Units", "1001-2500 Units", 
+                                      "2501-5000 Units", ">5000 Units"))
+invClass <- data.frame(invClass)
+gClass <- ggplot(invClass, aes(x=invClass)) # Dramatically skewed to the right
+gClass + geom_bar(fill="steelblue") + 
+    labs(x = "Investor Class", y = "Count", title = "Count of Texas Investors by Investor Class") + 
+    theme(axis.text.x=element_text(angle=45))
+```
+
+The actual counts for each Investor Class are:
+
+```{r classTable}
+options(width = 120)
+table(invClass)
+sub25 <- sum(invClass == "2-4 Units", invClass == "5-10 Units", invClass == "11-25 Units") # 228,576 in our wheelhouse
+```
+
+The total number of names in our targeted investor classes (2-25 units owned) is **`r comma_format()(sub25)`**.
+
+Looking at just SFRs, how many are owned by these investors? Counting how many investors own just one SFR, two SFRs, etc. provides a sense of the distribution.  
+```{r invSFRTable}
+options(width = 120)
+invSFR <- subset(txInv, Num.SFR.Properties > 0, select = Num.SFR.Properties)
+table(invSFR)
+```  
+
+Looking at it visually, we can show what percentage of investors are at or below a given SFR ownership count. This plot demonstrates just how skewed investment property ownership is toward single-digit inventories.  
+```{r investorSFRPlot1}
+# ECDF (Empirical Cumulative Distribution Function) plot shows what % of observations are at or below a given x value
+gSFR1 <- ggplot(invSFR, aes(x=Num.SFR.Properties))
+gSFR1 + stat_ecdf() +
+    scale_x_continuous(limits=c(0, 50), breaks=c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30)) + 
+    annotate("text", hjust=1.2, x=Inf, y=.875, label=paste("Max # of SFR Properties Owned = ", max(invSFR$Num.SFR.Properties))) + 
+    labs(x = "Number of SFR Properties", y = "Proportion of Investors") + 
+    ggtitle("Proportion of Investors Owning SFR Properties")
+```
+
+In the above plot, for example, about 75% of the investors own just one or two SFRs.  Nearly 100% own 20 or fewer. Let's subset to 10 or fewer SFRs to zoom in on that 1-10 range.
+```{r investorSFRPlot2}
+invSFR10 <- subset(invSFR, invSFR$Num.SFR.Properties <= 10)
+gSFR2 <- ggplot(invSFR10, aes(x=Num.SFR.Properties))
+gSFR2 + stat_ecdf() + 
+    scale_x_continuous(limits=c(0,10), breaks=0:10) + 
+    labs(x = "Number of SFR Properties", y = "Proportion of Investors") + 
+    ggtitle("Proportion of Investors Owning 1-10 SFR Properties")
+quantile(invSFR10$Num.SFR.Properties, probs = seq(0, 1, by=.1))
+```
+
+Still heavily skewed. In fact, there are so few investors owning more than 10 SFRs (`r comma_format()(length(invSFR[invSFR$Num.SFR.Properties > 10, ]))` in total) that excluding them from the plot doesn't significantly change the proportions at each ownership count.
+
+And where do they live? After discarding PO Boxes, mapping the investors by county yields few surprises, with Harris County at #1.
+
+```{r investorMap, fig.width=8, fig.height=8, fig.align='center'}
+# Load and process the map
+county_map <- map_data("county", region="texas")
+county_map$region <- county_map$subregion
+# Process the dataset to isolate the counties
+invCounties <- tolower(txInv[, "Investor.Mailing.County"])
+invCounties <- data.frame(invCounties)
+names(invCounties)[1] <- "region"
+invCounties <- count(invCounties)
+invCounties[is.na(invCounties)] <- 0
+# Create a theme with the background elements removed
+themeClean <- function(base_size = 12) {
+    require(grid) #Needed for unit() function
+    theme_grey(base_size) %+replace%
+    theme(
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        panel.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.ticks.length = unit(0, "cm"),
+        axis.ticks.margin = unit(0, "cm"),
+        panel.margin = unit(0, "lines"),
+        plot.margin = unit(c(0, 0, 0, 0), "lines"),
+        complete = TRUE
+    )
+}
+# Calculate the center of each county for labeling
+simpleCap <- function(x) {
+    s <- strsplit(x, " ")[[1]]
+    paste(toupper(substring(s, 1,1)), substring(s, 2),
+          sep="", collapse=" ")
+}
+regionCenter <- ddply(county_map, .(region), summarize, clat=mean(lat), clong=mean(long))
+regionCenter$region <- apply(regionCenter, 1, simpleCap)
+# gMap2 uses the straight frequencies (pull gMap1 for quantiles of the frequencies)
+gMap2 <- ggplot(data=invCounties, aes(map_id = region, fill = freq))
+gMap2 + geom_map(map=county_map, color="black") + 
+    scale_fill_gradient2(low="#559999", mid="grey90", high="#BB650B", midpoint = 8000) + 
+    expand_limits(x = county_map$long, y=county_map$lat) + 
+    geom_text(data = regionCenter, aes(x = clong, y = clat+0.05, label = region, fill=NULL, map_id = NULL), size = 3, alpha=0.5, show_guide=F) + 
+    coord_map("polyconic") + 
+    labs(fill="Investor Count", title="Concentration of Investors, by County") + 
+    themeClean()
+```
+
+*****
+
+###Have investors' purchases decreased?
+In a stable or growing market, we would expect investors to constantly be buying houses, so the reported last purchase dates would consistently be rolling forward. There will always be a tail in the past since investors will be buying on different schedules, but in a healthy market, looking at the data over time should resemble a wave rolling forward, always up.
+
+We only have a snapshot in time of the purchase dates, but graphing investors' last purchase dates shows that there's been a drop off in purchases, starting in early 2013.
+```{r lastDates}
+lastDate <- txInv$Last.Purchase.Date
+lastDate <- lastDate[!is.na(lastDate)]
+lastDate <- subset(lastDate, lastDate >= "19900101") # Some obvious errors ( min(lastDate)=18980101 ), so subset
+lastDate <- as.Date(as.character(lastDate), "%Y%m%d")
+lastDate <- data.frame(lastDate) # For plotting with ggplot2
+gLast <- ggplot(lastDate, aes(x=lastDate)) # Purchases are tailing off...this line should be heavily skewed to recent dates
+gLast + geom_histogram(fill="steelblue", color="black", binwidth=200) + 
+    ggtitle("Count of Investors' Last Purchase Date of Investment Properties") + 
+    labs(x = "Date of Last Purchase", y = "Number of Investors") + 
+    scale_x_date(limits=c(as.Date("1990-01-01"),as.Date("2014-12-31")), breaks=seq(as.Date("1990-01-01"), as.Date("2014-12-31"), by="12 month")) + 
+    theme(axis.text.x = element_text(angle=40, hjust=1))
+```
+
+Graphing the median purchase dates for Texas investors shows a similar drop off.
+```{r medDates}
+medDate <- txInv$Median.Purchase.Date
+medDate <- medDate[!is.na(medDate)]
+medDate <- subset(medDate, medDate > 0)
+medDate <- as.Date(as.character(medDate), "%Y%m%d")
+medDate <- data.frame(medDate) # For plotting with ggplot2
+gMed <- ggplot(medDate, aes(x=medDate))
+gMed + geom_histogram(fill="steelblue", color="black", binwidth=200) + 
+    ggtitle("Count of Investors' Median Purchase Date of Investment Properties") + 
+    labs(x = "Median Date of Purchase", y = "Number of Investors") + 
+    scale_x_date(limits=c(as.Date("1990-01-01"),as.Date("2014-12-31")), breaks=seq(as.Date("1990-01-01"), as.Date("2014-12-31"), by="12 month")) + 
+    theme(axis.text.x = element_text(angle=40, hjust=1))
+```
+
+*****
+
+###What is the distribution of the prices of investors' purchases and how many are in our target zone?
+```{r nonZeroPurchases}
+txInvNonZero <- subset(txInv, Avg.Purchase.Price > 0)
+```
+There are a lot of missing values, so we subset the data set to just those investors who have an average purchase price greater than $0. This leaves `r comma_format()(nrow(txInvNonZero))` investors. Plotting these investors shows a number of outliers, with the highest average price recorded being $`r comma_format()(max(txInvNonZero$Avg.Purchase.Price))`.
+
+```{r avgPurchMax}
+gPurchMax <- ggplot(txInvNonZero, aes(x = txInvNonZero$Avg.Purchase.Price, y = txInvNonZero$Total.Properties))
+gPurchMax + geom_point(size = 3, color = "steelblue", alpha = 0.5) + 
+    labs(x = "Average Purchase Price", y = "Total Properties Owned", title = "Average Purchase Price and Total Properties Owned by Investors") + 
+    scale_x_continuous(labels=comma)
+```
+
+Subsetting the data to investors owning fewer than 100 properties with an average purchase price less than $500,000:
+```{r gPrice}
+txInvNonZero <- subset(txInvNonZero, Avg.Purchase.Price < 500000 & Total.Properties < 100)
+gPrice <- ggplot(txInvNonZero, aes(x=Avg.Purchase.Price, y=Total.Properties))
+gPrice + geom_point(alpha=.5, color="steelblue", size=3) + 
+    scale_x_continuous(labels=comma) + 
+    labs(x = "Average Purchase Price", y = "Total Properties Owned", title = "Average Purchase Price and Total Properties Owned by Investors")
+
+targetArea <- sum(txInvNonZero$Avg.Purchase.Price < 200000 & txInvNonZero$Total.Properties < 30)
+sub4units <- subset(txInvNonZero, Investor.Class=="2-4 Units")
+```
+
+The lower left corner of the plot is densely packed, implying that there is no shortage of investors that match our targeted investors who are experienced (owning multiple properties) and who buy houses for less than $200,000. Specific to purchase prices less than $200K and fewer than 30 properties owned, there are **`r comma_format()(targetArea)`** investors in Texas. Looking at investors who own two to four units, there are **`r comma_format()(nrow(sub4units))`** in Texas.
+
+Examining the data provided for these investors, we can dig a bit deeper into the pricing and age of their investments.
+```{r sub4Stats}
+sub4PriceMean <- round(mean(sub4units$Avg.Purchase.Price), 0)
+sub4PriceMedian <- round(median(sub4units$Median.Purchase.Price), 0)
+sub4PriceQuantAvg <- round(quantile(sub4units$Avg.Purchase.Price), 0)
+sub4PriceQuantMedian <- round(quantile(sub4units$Median.Purchase.Price), 0)
+sub4DateMedian <- round(median(sub4units$Median.Purchase.Date), 0)
+```
+Median of the average purchase date: `r as.Date(as.character(sub4DateMedian), "%Y%m%d")`  
+Mean of the average purchase price: $`r comma_format()(sub4PriceMean)`  
+Median of the median purchase price: $`r comma_format()(sub4PriceMedian)`  
+Quartiles of the average purchase price:
+```{r}
+comma_format()(sub4PriceQuantAvg)
+```
+Quartiles of the median purchase price:
+```{r}
+comma_format()(sub4PriceQuantMedian)
+```
+
+*****
+
+###How do the purchases prices relate to the rents in those areas?
+Rental yields are a key indicator of the likelihood of success for an investment property. While we don't have all the information needed to calculate true net rental yields for these investors' properties, we do have median purchase prices and average median rents for many investors' inventory.
+
+Plotting purchases prices vs. comparable rents will let us see the distribution of the relationship between the two. We'll subset to those investors who have values for both variables. We're left with a lot of outliers, so we'll subset to median purchase prices <= $500,000 and plot average median rents between $500 and $3,000 (very few rents above and below for this price subset).
+
+```{r priceRents}
+# Subset to just those investors with values for both variables
+txInvRents <- subset(txInv, Median.Purchase.Price > 0 & Avg.Median.Rents > 0)
+txInvRents <- subset(txInvRents, Median.Purchase.Price < 500000)
+txInvRents$Purchase.Cat <- ifelse(txInvRents$Median.Purchase.Price < 500000 & txInvRents$Median.Purchase.Price > 200000, "$200K-$500K", "<$200K")
+#txInvRents2 <- subset(txInvRents, Median.Purchase.Price < 200000)
+gRent <- ggplot(txInvRents, aes(x = Median.Purchase.Price, y = Avg.Median.Rents))
+gRent <- ggplot(txInvRents, aes(x = Median.Purchase.Price, y = Avg.Median.Rents))
+gRent + geom_point(alpha=.3, color="steelblue", size=3) + 
+    scale_x_continuous(labels=comma) + 
+    geom_smooth(fill = "skyblue4", weight = 5, color = "darkblue", method = "lm") + 
+    geom_smooth(fill = "coral", weight = 5, color = "darkred") + 
+    labs(x = "Median Purchase Price", y = "Average Median Rents", title = "Purchase Price vs. Rents") + 
+    #    facet_grid(. ~ Purchase.Cat, scales = "free") + 
+    ylim(500, 3000)
+```
+
+The blue line overlaid on the graph is a fitted linear regression, with the shaded area bounding the line representing the 95% confidence area. The red line is the conditional mean curve, which gives the expected rent mean based on a given purchase price and its plotted neighbors. Certainly geography and neighborhood strongly influence rents, but we can see from the red curve that there is a leveling off in average rents, regardless of purchase price.
+
+If we divide the annual average median rent by the median purchase price for each investor, the result is a gross rental yield. We'll subset to yields below 100% to eliminate some of the illogical data resulting from some erroneous data.
+```{r rentYield}
+# Very clustered, so let's calculate the rental yield and then eliminate illogical data
+txInvRents$Yields <- txInvRents$Avg.Median.Rents*12 / txInvRents$Median.Purchase.Price
+txInvRents <- subset(txInvRents, Yields < 1)
+gYields <- ggplot(txInvRents, aes(x=Yields))
+gYields + geom_bar(fill="steelblue", binwidth = .008) + 
+    labs(x = "Rent Yields (avg median rents*12/median purchase price)", y = "Count", title = "Count of Rental Yields") + 
+    geom_vline(xintercept = mean(txInvRents$Yields), linetype = "dashed", size = 1, color = "darkblue") + 
+    annotate("text", label = paste("Mean = ", percent(mean(txInvRents$Yields))), x = 0.32, y = 125, hjust = 0, size = 5, color = "darkblue") + 
+    geom_vline(xintercept = median(txInvRents$Yields), linetype = "dashed", size = 1, color = "darkred") + 
+    annotate("text", label = paste("Median = ", percent(median(txInvRents$Yields))), x = 0.21, y = 176, vjust = 0, hjust = 1, size = 5, color = "darkred") + 
+    scale_x_continuous(labels=percent)    
+```
+
+
+*****
+
+###Are there any correlations among the variables?
+The list provides a lot of good data about Texas investors, but are there any conclusions to draw about the relationships among the data? Let's calculate the correlation coefficients between the main variables and plot the results.
+```{r corr, fig.width=8, fig.height=8, fig.align='center'}
+colors <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+# Subset for numeric variables and oddball properties
+corrInv <- txInv[, -c(1:10, 13, 15:26, 33:36, 38:48, 51:52, 55, 59:69)]
+corInv <- cor(corrInv, use="pairwise.complete.obs")
+corrplot(corInv, method="shade", tl.col="black", tl.srt=60, cl.ratio=0.2, cl.align="r", tl.offset=0.5, order="AOE", col=colors(300))
+```
+
+*****
+
+###What are all the variables available?
+Thinking about additional questions to answer and analyses to perform, here are all the variables provided in the data set, although not every investor has data for each variable:
+```{r varNames}
+names(txInv)
+```
