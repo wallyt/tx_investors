@@ -91,7 +91,10 @@ invCounties <- tolower(txInv[, "Investor.Mailing.County"])
 invCounties <- data.frame(invCounties)
 names(invCounties)[1] <- "region"
 invCounties <- count(invCounties)
-invCounties[is.na(invCounties)] <- 0
+invCounties <- subset(invCounties, !is.na(invCounties$region))
+# There are some counties with 0 investors, but we still want the counties to be outlined on our maps
+missingCounties <- data.frame(region=c("hudspeth", "briscoe", "hall", "hartley", "kenedy"), freq=NA)
+invCounties <- rbind(invCounties, missingCounties)
 
 q <- quantile(invCounties$freq, c(0.2, 0.4, 0.6, 0.7, 0.8, 1.0))
 # Add the quantile category as a column
@@ -138,12 +141,14 @@ gMap1 + geom_map(map=county_map, color="black") +
     themeClean()
 
 # gMap2 uses the straight frequencies
+png("tx_investors_by_county.png", width=1200, height=1200)
 gMap2 <- ggplot(data=invCounties, aes(map_id = region, fill = freq))
 gMap2 + geom_map(map=county_map, color="black") + 
-    scale_fill_gradient2(low="#559999", mid="grey90", high="#BB650B", midpoint = 8000) + 
+    scale_fill_gradient2(low="#559999", mid="grey90", high="#BB650B", midpoint = 2000, na.value="white") + 
     expand_limits(x = county_map$long, y=county_map$lat) + 
     geom_text(data = regionCenter, aes(x = clong, y = clat+0.05, label = region, fill=NULL, map_id = NULL), size = 3, alpha=0.5, show_guide=F) + 
     coord_map("polyconic") + 
     labs(fill="Investor Count", title="Concentration of Investors, by County") + 
     themeClean()
+dev.off()
 

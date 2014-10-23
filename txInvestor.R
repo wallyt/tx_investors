@@ -137,10 +137,24 @@ quantile(sub4units$Median.Purchase.Price)
 mean(sub4units$Avg.Purchase.Date)
 median(sub4units$Median.Purchase.Date)
 
-#################
+###################################
 # To search for an investor in the list
 # txInv[c(grep("matza", txInv$Investor.Name, ignore.case=TRUE)), c(3,11)]
-#################
+# grep("matza", txInv$Investor.Name, ignore.case=TRUE, value=TRUE) #returns value, not the index position
+
+# Test against investor names pulled from Zillow listings
+zillowNames <- read.csv("zillowTXInvestorNames.csv", na.strings = "", stringsAsFactors = FALSE)
+zillowNames$X <- NULL  # Empty column
+zillowNames$X.1 <- NULL  # Empty column
+zillowTXNameHits <- 0
+for(i in 1:nrow(zillowNames)) {
+    if(length(grep(zillowNames$last.name[i], txInv$Investor.Name, ignore.case=TRUE)) > 0) {
+        zillowTXNameHits = zillowTXNameHits + 1
+    }
+}
+# Percentage of Zillow TX list that had at least one hit:
+percent(zillowTXNameHits/nrow(zillowNames))
+###################################
 
 ## Plot median rent vs. median purchase price, also look at rental yields
 # Subset to just those investors with values for both variables
